@@ -5,6 +5,7 @@ import gc
 from tensorflow import keras
 from keras import layers
 from keras.models import Model
+from affine import Af
 
 
 class Tublet_projection(layers.Layer):
@@ -41,7 +42,24 @@ class ModulationEmbedding(layers.Layer):
         encoded_speed = self.speed_embedding(runing_speed)
         encoded_tokens = encoded_tokens + encoded_speed + encoded_positions
         return encoded_tokens
-
+class normalize_affine(layers.Layer): 
+    def build(self,input_shape):
+        self.shape = input_shape
+        if len(self.shape)!=3:
+            raise ValueError(f'expext 3d tensor but got {self.shape}')
+    def call(self,inputs):
+        # expect 3d tesnsor 
+        shape = tf.shape(inputs)
+        inputs = tf.reshape(inputs,(shape[0]*shape[1],-1))
+        alpha = inputs[:,0]*np.pi - np.pi/2 
+        shift_x = inputs[:,1] - 0.5
+        shift_y = inputs[:,2] - 0.5
+        sin_alpha = tf.sin(alpha)
+        cos_alpha = tf.cos(alpha)
+        outs = tf.concat([cos_alpha,-sin_alpha,shift_x,sin_alpha,cos_alpha,shift_y],axis = 0)
+        outs = tf.reshape(outs,(-1,shape[1],2,3))
+        return outs
+        
 class PositionalEncoder(layers.Layer):
     def __init__(self, embed_dim, **kwargs):
         super().__init__(**kwargs)
@@ -61,8 +79,8 @@ class PositionalEncoder(layers.Layer):
         return encoded_tokens
 
 def build_model(num_heads:int,
-                spatial_layers:int,temporal_layers:int,
-                delay:int,embed_dim:int,input_shape:tuple,output_shape:tuple)->keras.models.Model:
+                spatial_layers:int,temporal_layers:int,batch_size:int,
+                delay:int,embed_dim:int,input_shape:tuple,output_shape:tuple,affine = False)->keras.models.Model:
     
 
 
@@ -74,6 +92,7 @@ def build_model(num_heads:int,
     input_shape = (delay,input_shape[1],input_shape[2],input_shape[3])
     LAYER_NORM_EPS = 1e-6
     output_shape = output_shape[1]
+    b_size = batch_size
 
 
 
@@ -81,16 +100,29 @@ def build_model(num_heads:int,
     running_speed_input = layers.Input(shape = (delay),name= "running_input")
 
 
-    
-    
 
-
+    
     
 
 
+    
 
-    # Create patches.
-    patches = Tublet_projection(patch_size=(16,16),embed_dim=embed_dim)(inputs)
+
+    if affine: 
+        eye_input = layers.Input(shape = (delay,4))
+        x = layers.Dense(128,activation='elu')(eye_input)
+        x = layers.Dense(128,activation='elu')(x)
+        x = layers.Dense(64,activation='elu')(x)
+        x = layers.Dense(32,activation='elu')(x)
+        x = layers.Dense(3,activation='sigmoid')(x)
+        x = normalize_affine()(x)
+        x = Af(bacth_size=b_size)([inputs,x])
+        # Create patches.
+        patches = Tublet_projection(patch_size=(16,16),embed_dim=embed_dim)(inputs)
+    else: 
+            
+        # Create patches.
+        patches = Tublet_projection(patch_size=(16,16),embed_dim=embed_dim)(inputs)
     #pathces = Lambda(lambda x : x/255.0)(patches)
     #Encode patches.
     encoded_patches = PositionalEncoder(embed_dim=embed_dim)(patches)
@@ -169,5 +201,8 @@ def build_model(num_heads:int,
     #outputs = layers.Dense(units=output_shape, activation="linear",kernel_regularizer=regularization)(representation)
     representation = layers.Concatenate()([representation,feedback])
     outputs = layers.Dense(units=output_shape, activation="linear")(representation)
-    model = keras.Model(inputs=[inputs,running_speed_input,feedback_input], outputs=outputs)
+    if affine: 
+        model = keras.Model(inputs=[inputs,running_speed_input,feedback_input,eye_input], outputs=outputs)
+    else: 
+        model = keras.Model(inputs=[inputs,running_speed_input,feedback_input], outputs=outputs)
     return model #,core_model
